@@ -8,12 +8,15 @@ import platform.Foundation.NSURL
 import platform.Foundation.NSUserDomainMask
 
 fun getDatabase(): AppDatabase {
-    val dbFilePath = documentDirectory() + "/${DATABASE_NAME}"
-    val passphrase = DATABASE_KEY
+    val dbFilePath = databaseFilePath()
+    val passphrase = getOrCreateDatabasePassphrase()
+    deleteIfPlaintext(dbFilePath, passphrase)
     return Room.databaseBuilder<AppDatabase>(name = dbFilePath)
-        .setDriver(SQLCipherNativeDriver(passphrase = passphrase, enableWal = true))
+        .setDriver(SQLCipherDriver(passphrase))
         .build()
 }
+
+internal fun databaseFilePath(): String = documentDirectory() + "/${DATABASE_NAME}"
 
 @OptIn(ExperimentalForeignApi::class)
 private fun documentDirectory(): String {

@@ -10,7 +10,6 @@ import com.desquared.encryptedroom.todos.TodoEntity
 
 const val DATABASE_VERSION = 1
 const val DATABASE_NAME = "encrypted_room"
-const val DATABASE_KEY = "replace-it-with-your-own-key"
 
 @Database(
     version = DATABASE_VERSION,

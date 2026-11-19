@@ -1,94 +1,61 @@
 package com.desquared.encryptedroom.db
 
 import androidx.sqlite.SQLiteConnection
-import androidx.sqlite.driver.NativeSQLiteDriver
+import kotlin.native.Platform
+import kotlinx.cinterop.toKString
+import swiftPMImport.composeApp.sc_libversion
 
 /**
- * Utility object for verifying that SQLCipher is properly linked and active
- * on the current iOS (or other native) target.
+ * Debug-only sanity check that the database on disk is actually encrypted by SQLCipher.
  *
- * It performs runtime checks using a temporary in-memory database to inspect:
- * - the SQLite core version,
- * - the SQLCipher version (if available),
- * - and whether the codec extension (`SQLITE_HAS_CODEC`) is present in compile options.
- *
- * This is useful to confirm that the app is not accidentally linking against
- * the system SQLite instead of SQLCipher.
+ * The three checks follow Zetetic's encryption testing guide:
+ * 1. `PRAGMA cipher_version` is only non-null when SQLCipher is the loaded library,
+ * 2. `sqlite_master` is only readable when the key is correct,
+ * 3. the file header must not be the plaintext `"SQLite format 3\0"` signature.
  */
 object SQLCipherTester {
 
-    /**
-     * Runs a series of diagnostic checks against a temporary in-memory
-     * SQLite database connection.
-     *
-     * The returned string contains human-readable results for:
-     * - `sqlite_version`: the underlying SQLite library version,
-     * - `cipher_version`: the SQLCipher version string, or `null` if not present,
-     * - `has SQLITE_HAS_CODEC`: whether the library was built with SQLCipher codec support.
-     *
-     * @return a multi-line string with the diagnostic output.
-     */
-    fun runChecks(): String {
-        val driver = NativeSQLiteDriver()
-        val conn: SQLiteConnection = driver.open(":memory:")
-
-        val sb = StringBuilder()
-
-        // 1. SQLite version
-        sb.appendLine("sqlite_version: ${singleTextOrNull(conn, "SELECT sqlite_version();")}")
-
-        // 2. PRAGMA cipher_version
-        val cipherVersion = singleTextOrNull(conn, "PRAGMA cipher_version;")
-        sb.appendLine("cipher_version: $cipherVersion")
-
-        // 3. PRAGMA compile_options
-        val hasCodec = anyRowMatches(conn, "PRAGMA compile_options;", contains = "SQLITE_HAS_CODEC")
-        sb.appendLine("has SQLITE_HAS_CODEC: $hasCodec")
-
-        conn.close()
-
-        println("SQLCipherTester.runChecks():\n$sb")
-        return sb.toString()
-    }
-
-    /**
-     * Executes a query that is expected to return a single text value,
-     * returning the value of the first column in the first row, or `null`
-     * if no rows are returned.
-     *
-     * @param conn an open [SQLiteConnection].
-     * @param sql the SQL query to execute.
-     * @return the text value of the first column, or `null`.
-     */
-    private fun singleTextOrNull(conn: SQLiteConnection, sql: String): String? {
-        val st = conn.prepare(sql)
-        return try {
-            if (st.step()) st.getText(0) else null
-        } finally {
-            st.close()
+    fun verifyEncryption(dbPath: String) {
+        if (!Platform.isDebugBinary) {
+            return
         }
+
+        val report = StringBuilder()
+        report.appendLine("--- SQLCipher file verification for: $dbPath ---")
+        report.appendLine("bridge_libversion: ${sc_libversion()?.toKString() ?: "unavailable"}")
+
+        var cipherVersion: String? = null
+        var schemaAccessible = false
+        val connection: SQLiteConnection? = try {
+            SQLCipherDriver(getOrCreateDatabasePassphrase()).open(dbPath)
+        } catch (failure: Throwable) {
+            report.appendLine("open_error: $failure")
+            null
+        }
+        if (connection != null) {
+            try {
+                cipherVersion = singleText(connection, "PRAGMA cipher_version;")
+                schemaAccessible = runCatching {
+                    singleText(connection, "SELECT count(*) FROM sqlite_master;")
+                }.isSuccess
+            } finally {
+                connection.close()
+            }
+        }
+
+        report.appendLine("cipher_version: $cipherVersion")
+        report.appendLine("schema_accessible: $schemaAccessible")
+        report.appendLine("header_encrypted: ${!hasPlaintextHeader(dbPath)}")
+        report.appendLine("--- SQLCipher verification complete ---")
+        println(report)
     }
 
-    /**
-     * Executes a query and scans all rows for a column containing the given [contains] substring.
-     *
-     * Useful for checking compile options such as `SQLITE_HAS_CODEC`.
-     *
-     * @param conn an open [SQLiteConnection].
-     * @param sql the SQL query to execute.
-     * @param contains the substring to search for in the first column of each row.
-     * @return `true` if any row's first column contains the substring, `false` otherwise.
-     */
-    private fun anyRowMatches(conn: SQLiteConnection, sql: String, contains: String): Boolean {
-        val st = conn.prepare(sql)
+    private fun singleText(connection: SQLiteConnection, sql: String): String? {
+        val statement = connection.prepare(sql)
         return try {
-            while (st.step()) {
-                val txt = st.getText(0) ?: continue
-                if (txt.contains(contains)) return true
-            }
-            false
+            if (statement.step()) statement.getText(0) else null
         } finally {
-            st.close()
+            statement.close()
         }
     }
 }

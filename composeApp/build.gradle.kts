@@ -1,3 +1,5 @@
+@file:OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
+
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -6,7 +8,6 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
 
-    alias(libs.plugins.kotlinCocoapods)
     alias(libs.plugins.ksp)
     alias(libs.plugins.androidx.room)
 }
@@ -19,25 +20,37 @@ kotlin {
             }
         }
     }
-    iosX64()
-    iosArm64()
-    iosSimulatorArm64()
-
-    cocoapods {
-        homepage = "https://github.com/Desquared/kmp-encrypted-room-database"
-        license = ""
-        summary = "Shared KMP code"
-        version = "1.0.0"
-        ios.deploymentTarget = "16.0"
-        podfile = project.file("../iosApp/Podfile")
-        framework {
+    // Compose Multiplatform 1.11+ no longer publishes iosX64 artifacts, so only arm64 targets remain.
+    listOf(
+        iosArm64(),
+        iosSimulatorArm64(),
+    ).forEach { target ->
+        target.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true
         }
-        pod(name = "SQLCipher") {
-            version = "4.8.0"
-            linkOnly = true
-        }
+    }
+
+    // iOS links SQLCipher (and Firebase, which transitively links the system sqlite3) through SwiftPM
+    // instead of CocoaPods. See sqlcipher-bridge/ for why the SQLCipher symbols are resolved at runtime.
+    swiftPMDependencies {
+        iosMinimumDeploymentTarget.set("16.0")
+
+        // Firebase's transitive C++ packages (gRPC, abseil, BoringSSL) expose Clang modules that
+        // cinterop cannot import, so only the modules this project actually needs are listed.
+        discoverClangModulesImplicitly.set(false)
+
+        localSwiftPackage(
+            directory = project.layout.projectDirectory.dir("sqlcipher-bridge"),
+            products = listOf("SQLCipherBridge"),
+            importedClangModules = listOf("SQLCipherBridge"),
+        )
+        swiftPackage(
+            url = url("https://github.com/firebase/firebase-ios-sdk.git"),
+            version = exact(libs.versions.firebase.ios.get()),
+            products = listOf(product("FirebaseAnalytics")),
+            importedClangModules = listOf("FirebaseAnalytics"),
+        )
     }
 
     sourceSets {
@@ -69,15 +82,6 @@ kotlin {
             implementation(libs.kotlin.test)
         }
 
-        val iosX64Main by getting
-        val iosArm64Main by getting
-        val iosSimulatorArm64Main by getting
-        val iosMain by creating {
-            dependsOn(commonMain.get())
-            iosX64Main.dependsOn(this)
-            iosArm64Main.dependsOn(this)
-            iosSimulatorArm64Main.dependsOn(this)
-        }
         iosMain.dependencies {
             // SQLite
             implementation(libs.androidx.sqlite.framework)
@@ -88,9 +92,7 @@ kotlin {
 dependencies {
     add("kspAndroid", libs.room.compiler)
     add("kspIosSimulatorArm64", libs.room.compiler)
-    add("kspIosX64", libs.room.compiler)
     add("kspIosArm64", libs.room.compiler)
-    // Add any other platform target you use in your project, for example kspDesktop
 }
 
 room {
@@ -128,4 +130,3 @@ dependencies {
     debugImplementation(compose.uiTooling)
     implementation(libs.room.runtime)
 }
-
